@@ -10,7 +10,7 @@
 #include "imgui_impl_opengl3.h"
 #include <SDL.h>
 #include <GL/glew.h>
-
+#include <atomic>
 struct Location {
     float latitude = 0.0f;
     float longitude = 0.0f;
@@ -19,7 +19,7 @@ struct Location {
 };
 
 std::mutex loc_mutex;
-
+std::atomic<bool> server_running{true};
 void save_to_json(const Location& loc) {
     std::ifstream infile("locations.json");
     nlohmann::json arr = nlohmann::json::array();
@@ -43,7 +43,7 @@ void run_server(Location* loc) {
     socket.bind("tcp://0.0.0.0:5555");
     std::cout << "Server started on port 5555" << std::endl;
 
-    while (true) {
+    while (server_running) {
         zmq::message_t request;
         socket.recv(request, zmq::recv_flags::none);
         std::string msg(static_cast<char*>(request.data()), request.size());
@@ -83,7 +83,7 @@ void run_gui(Location* loc) {
         SDL_Event event;
         while (SDL_PollEvent(&event)) {
             ImGui_ImplSDL2_ProcessEvent(&event);
-            if (event.type == SDL_QUIT) running = false;
+            if (event.type == SDL_QUIT) { running = false; server_running = false; }
         }
 
         ImGui_ImplOpenGL3_NewFrame();

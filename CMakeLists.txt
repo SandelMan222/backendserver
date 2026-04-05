@@ -35,5 +35,5 @@ target_include_directories(implot PUBLIC ${THIRD_PARTY_DIR}/implot)
 target_link_libraries(implot PRIVATE imgui)
 target_compile_options(implot PRIVATE -fPIC)
 
-add_executable(main ${SRC_DIR}/main.cpp)
+add_executable(main ${PROJECT_SOURCE_DIR}/main.cpp)
 target_link_libraries(main PRIVATE imgui implot ${SDL2_LIBRARIES} ${OPENGL_LIBRARIES} ${GLEW_LIBRARIES} zmq)
