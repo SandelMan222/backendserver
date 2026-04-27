@@ -4,11 +4,14 @@
 #include <string>
 #include <fstream>
 #include <vector>
+#include <deque>
+#include <chrono>
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
 #include "imgui.h"
 #include "imgui_impl_sdl2.h"
 #include "imgui_impl_opengl3.h"
+#include "implot.h"
 #include <SDL.h>
 #include <GL/glew.h>
 #include <atomic>
@@ -44,9 +47,125 @@ struct DeviceData {
     std::vector<NrCell> nr;
 };
 
+struct SignalHistory {
+    std::deque<float> rsrp;
+    std::deque<float> rsrq;
+    std::deque<float> rssi;
+    std::deque<float> asu;
+    std::deque<float> time_axis;
+    float time_counter = 0.0f;
+    static const int MAX_POINTS = 200;
+};
+
 std::mutex data_mutex;
 std::atomic<bool> server_running{true};
-DeviceData gData;
+SignalHistory gHistory;
+
+void process_json(const nlohmann::json& j, DeviceData* data) {
+    if (j.contains("location")) {
+        auto l = j["location"];
+        data->location.latitude  = l.value("latitude",  0.0);
+        data->location.longitude = l.value("longitude", 0.0);
+        data->location.altitude  = l.value("altitude",  0.0);
+        data->location.accuracy  = l.value("accuracy",  0.0);
+        data->location.timestamp = l.value("timestamp", "unknown");
+    }
+
+    data->lte.clear();
+    if (j.contains("lte")) {
+        for (auto& cell : j["lte"]) {
+            LteCell c;
+            c.band   = std::to_string(cell.value("band", 0));
+            c.mcc    = cell.value("mcc", "");
+            c.mnc    = cell.value("mnc", "");
+            c.cid    = cell.value("cid", 0);
+            c.earfcn = cell.value("earfcn", 0);
+            c.pci    = cell.value("pci", 0);
+            c.tac    = cell.value("tac", 0);
+            c.asu    = cell.value("asu", 0);
+            c.cqi    = cell.value("cqi", 0);
+            c.rsrp   = cell.value("rsrp", 0);
+            c.rsrq   = cell.value("rsrq", 0);
+            c.rssi   = cell.value("rssi", 0);
+            c.rssnr  = cell.value("rssnr", 0);
+            c.timing_advance = cell.value("timing_advance", 0);
+            data->lte.push_back(c);
+        }
+    }
+
+    if (!data->lte.empty()) {
+        auto& c = data->lte[0];
+        gHistory.time_counter += 3.0f;
+        if (gHistory.rsrp.size() >= SignalHistory::MAX_POINTS) {
+            gHistory.rsrp.pop_front();
+            gHistory.rsrq.pop_front();
+            gHistory.rssi.pop_front();
+            gHistory.asu.pop_front();
+            gHistory.time_axis.pop_front();
+        }
+        gHistory.rsrp.push_back((float)c.rsrp);
+        gHistory.rsrq.push_back((float)c.rsrq);
+        gHistory.rssi.push_back((float)c.rssi);
+        gHistory.asu.push_back((float)c.asu);
+        gHistory.time_axis.push_back(gHistory.time_counter);
+    }
+
+    data->gsm.clear();
+    if (j.contains("gsm")) {
+        for (auto& cell : j["gsm"]) {
+            GsmCell c;
+            c.mcc    = cell.value("mcc", "");
+            c.mnc    = cell.value("mnc", "");
+            c.cid    = cell.value("cid", 0);
+            c.bsic   = cell.value("bsic", 0);
+            c.arfcn  = cell.value("arfcn", 0);
+            c.lac    = cell.value("lac", 0);
+            c.dbm    = cell.value("dbm", 0);
+            c.rssi   = cell.value("rssi", 0);
+            c.timing_advance = cell.value("timing_advance", 0);
+            data->gsm.push_back(c);
+        }
+    }
+
+    data->nr.clear();
+    if (j.contains("nr")) {
+        for (auto& cell : j["nr"]) {
+            NrCell c;
+            c.band    = std::to_string(cell.value("band", 0));
+            c.mcc     = cell.value("mcc", "");
+            c.mnc     = cell.value("mnc", "");
+            c.nci     = cell.value("nci", 0LL);
+            c.pci     = cell.value("pci", 0);
+            c.nrarfcn = cell.value("nrarfcn", 0);
+            c.tac     = cell.value("tac", 0);
+            c.ss_rsrp = cell.value("ss_rsrp", 0);
+            c.ss_rsrq = cell.value("ss_rsrq", 0);
+            c.ss_sinr = cell.value("ss_sinr", 0);
+            c.timing_advance = cell.value("timing_advance", 0);
+            data->nr.push_back(c);
+        }
+    }
+}
+
+void load_json_file(DeviceData* data) {
+    std::ifstream infile("locations.json");
+    if (!infile.good()) {
+        std::cout << "No locations.json found" << std::endl;
+        return;
+    }
+    nlohmann::json arr;
+    try {
+        infile >> arr;
+        if (!arr.is_array()) return;
+        std::cout << "Loading " << arr.size() << " records from locations.json..." << std::endl;
+        for (auto& j : arr) {
+            process_json(j, data);
+        }
+        std::cout << "Done loading." << std::endl;
+    } catch (const std::exception& e) {
+        std::cout << "Error loading JSON: " << e.what() << std::endl;
+    }
+}
 
 void run_server(DeviceData* data) {
     zmq::context_t context(1);
@@ -71,73 +190,7 @@ void run_server(DeviceData* data) {
             outfile << arr.dump(4);
 
             std::lock_guard<std::mutex> lock(data_mutex);
-
-            if (j.contains("location")) {
-                auto l = j["location"];
-                data->location.latitude  = l.value("latitude",  0.0);
-                data->location.longitude = l.value("longitude", 0.0);
-                data->location.altitude  = l.value("altitude",  0.0);
-                data->location.accuracy  = l.value("accuracy",  0.0);
-                data->location.timestamp = l.value("timestamp", "unknown");
-            }
-
-            data->lte.clear();
-            if (j.contains("lte")) {
-                for (auto& cell : j["lte"]) {
-                    LteCell c;
-                    c.band  = std::to_string(cell.value("band", 0));
-                    c.mcc   = cell.value("mcc", "");
-                    c.mnc   = cell.value("mnc", "");
-                    c.cid   = cell.value("cid", 0);
-                    c.earfcn= cell.value("earfcn", 0);
-                    c.pci   = cell.value("pci", 0);
-                    c.tac   = cell.value("tac", 0);
-                    c.asu   = cell.value("asu", 0);
-                    c.cqi   = cell.value("cqi", 0);
-                    c.rsrp  = cell.value("rsrp", 0);
-                    c.rsrq  = cell.value("rsrq", 0);
-                    c.rssi  = cell.value("rssi", 0);
-                    c.rssnr = cell.value("rssnr", 0);
-                    c.timing_advance = cell.value("timing_advance", 0);
-                    data->lte.push_back(c);
-                }
-            }
-
-            data->gsm.clear();
-            if (j.contains("gsm")) {
-                for (auto& cell : j["gsm"]) {
-                    GsmCell c;
-                    c.mcc   = cell.value("mcc", "");
-                    c.mnc   = cell.value("mnc", "");
-                    c.cid   = cell.value("cid", 0);
-                    c.bsic  = cell.value("bsic", 0);
-                    c.arfcn = cell.value("arfcn", 0);
-                    c.lac   = cell.value("lac", 0);
-                    c.dbm   = cell.value("dbm", 0);
-                    c.rssi  = cell.value("rssi", 0);
-                    c.timing_advance = cell.value("timing_advance", 0);
-                    data->gsm.push_back(c);
-                }
-            }
-
-            data->nr.clear();
-            if (j.contains("nr")) {
-                for (auto& cell : j["nr"]) {
-                    NrCell c;
-                    c.band   = std::to_string(cell.value("band", 0));
-                    c.mcc    = cell.value("mcc", "");
-                    c.mnc    = cell.value("mnc", "");
-                    c.nci    = cell.value("nci", 0LL);
-                    c.pci    = cell.value("pci", 0);
-                    c.nrarfcn= cell.value("nrarfcn", 0);
-                    c.tac    = cell.value("tac", 0);
-                    c.ss_rsrp= cell.value("ss_rsrp", 0);
-                    c.ss_rsrq= cell.value("ss_rsrq", 0);
-                    c.ss_sinr= cell.value("ss_sinr", 0);
-                    c.timing_advance = cell.value("timing_advance", 0);
-                    data->nr.push_back(c);
-                }
-            }
+            process_json(j, data);
 
         } catch (const std::exception& e) {
             std::cout << "Invalid JSON: " << e.what() << std::endl;
@@ -151,12 +204,13 @@ void run_gui(DeviceData* data) {
     SDL_Init(SDL_INIT_VIDEO);
     SDL_Window* window = SDL_CreateWindow("Cell Info Monitor",
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        800, 600, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+        1200, 800, SDL_WINDOW_OPENGL | SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
     SDL_GLContext gl_context = SDL_GL_CreateContext(window);
     glewInit();
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    ImPlot::CreateContext();
     ImGui_ImplSDL2_InitForOpenGL(window, gl_context);
     ImGui_ImplOpenGL3_Init("#version 130");
 
@@ -230,12 +284,41 @@ void run_gui(DeviceData* data) {
         }
         ImGui::End();
 
+        ImGui::Begin("Signal Strength (LTE Cell 0)");
+        {
+            std::lock_guard<std::mutex> lock(data_mutex);
+            std::vector<float> t(gHistory.time_axis.begin(), gHistory.time_axis.end());
+            std::vector<float> rsrp(gHistory.rsrp.begin(), gHistory.rsrp.end());
+            std::vector<float> rsrq(gHistory.rsrq.begin(), gHistory.rsrq.end());
+            std::vector<float> rssi(gHistory.rssi.begin(), gHistory.rssi.end());
+            std::vector<float> asu(gHistory.asu.begin(), gHistory.asu.end());
+
+            if (!t.empty()) {
+                if (ImPlot::BeginPlot("RSRP / RSRQ / RSSI", ImVec2(-1, 250))) {
+                    ImPlot::SetupAxes("Time (s)", "dBm");
+                    ImPlot::PlotLine("RSRP", t.data(), rsrp.data(), (int)t.size());
+                    ImPlot::PlotLine("RSRQ", t.data(), rsrq.data(), (int)t.size());
+                    ImPlot::PlotLine("RSSI", t.data(), rssi.data(), (int)t.size());
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("ASU Level", ImVec2(-1, 200))) {
+                    ImPlot::SetupAxes("Time (s)", "ASU");
+                    ImPlot::PlotLine("ASU", t.data(), asu.data(), (int)t.size());
+                    ImPlot::EndPlot();
+                }
+            } else {
+                ImGui::Text("Waiting for data...");
+            }
+        }
+        ImGui::End();
+
         ImGui::Render();
         glClear(GL_COLOR_BUFFER_BIT);
         ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
         SDL_GL_SwapWindow(window);
     }
 
+    ImPlot::DestroyContext();
     ImGui_ImplOpenGL3_Shutdown();
     ImGui_ImplSDL2_Shutdown();
     ImGui::DestroyContext();
@@ -245,6 +328,8 @@ void run_gui(DeviceData* data) {
 
 int main() {
     static DeviceData deviceData;
+
+    load_json_file(&deviceData);
 
     std::thread server_thread(run_server, &deviceData);
     std::thread gui_thread(run_gui, &deviceData);
