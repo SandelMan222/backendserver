@@ -5,6 +5,7 @@
 #include <fstream>
 #include <vector>
 #include <deque>
+#include <map>
 #include <chrono>
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
@@ -15,6 +16,7 @@
 #include <SDL.h>
 #include <GL/glew.h>
 #include <atomic>
+#include <libpq-fe.h>
 
 struct LteCell {
     std::string band, mcc, mnc;
@@ -47,21 +49,61 @@ struct DeviceData {
     std::vector<NrCell> nr;
 };
 
-struct SignalHistory {
+struct PciHistory {
     std::deque<float> rsrp;
-    std::deque<float> rsrq;
     std::deque<float> rssi;
-    std::deque<float> asu;
+    std::deque<float> rsrq;
     std::deque<float> time_axis;
-    float time_counter = 0.0f;
-    static const int MAX_POINTS = 200;
 };
 
 std::mutex data_mutex;
 std::atomic<bool> server_running{true};
-SignalHistory gHistory;
+std::map<int, PciHistory> gPciHistory;
+float gTimeCounter = 0.0f;
+const int MAX_POINTS = 200;
 
-void process_json(const nlohmann::json& j, DeviceData* data) {
+PGconn* db_connect() {
+    PGconn* conn = PQconnectdb("host=localhost dbname=cellinfo user=postgres password=postgres");
+    if (PQstatus(conn) != CONNECTION_OK) {
+        std::cout << "DB connection failed: " << PQerrorMessage(conn) << std::endl;
+        PQfinish(conn);
+        return nullptr;
+    }
+    return conn;
+}
+
+void db_insert(PGconn* conn, const Location& loc, const LteCell& cell) {
+    if (!conn) return;
+    std::string query =
+        "INSERT INTO lte_cells (timestamp, latitude, longitude, altitude, accuracy, band, cid, earfcn, mcc, mnc, pci, tac, asu, cqi, rsrp, rsrq, rssi, rssnr, timing_advance) VALUES ('" +
+        loc.timestamp + "'," +
+        std::to_string(loc.latitude) + "," +
+        std::to_string(loc.longitude) + "," +
+        std::to_string(loc.altitude) + "," +
+        std::to_string(loc.accuracy) + ",'" +
+        cell.band + "'," +
+        std::to_string(cell.cid) + "," +
+        std::to_string(cell.earfcn) + ",'" +
+        cell.mcc + "','" +
+        cell.mnc + "'," +
+        std::to_string(cell.pci) + "," +
+        std::to_string(cell.tac) + "," +
+        std::to_string(cell.asu) + "," +
+        std::to_string(cell.cqi) + "," +
+        std::to_string(cell.rsrp) + "," +
+        std::to_string(cell.rsrq) + "," +
+        std::to_string(cell.rssi) + "," +
+        std::to_string(cell.rssnr) + "," +
+        std::to_string(cell.timing_advance) + ")";
+
+    PGresult* res = PQexec(conn, query.c_str());
+    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
+        std::cout << "Insert failed: " << PQerrorMessage(conn) << std::endl;
+    }
+    PQclear(res);
+}
+
+void process_json(const nlohmann::json& j, DeviceData* data, PGconn* conn) {
     if (j.contains("location")) {
         auto l = j["location"];
         data->location.latitude  = l.value("latitude",  0.0);
@@ -90,24 +132,24 @@ void process_json(const nlohmann::json& j, DeviceData* data) {
             c.rssnr  = cell.value("rssnr", 0);
             c.timing_advance = cell.value("timing_advance", 0);
             data->lte.push_back(c);
+
+            if (conn) db_insert(conn, data->location, c);
         }
     }
 
-    if (!data->lte.empty()) {
-        auto& c = data->lte[0];
-        gHistory.time_counter += 3.0f;
-        if (gHistory.rsrp.size() >= SignalHistory::MAX_POINTS) {
-            gHistory.rsrp.pop_front();
-            gHistory.rsrq.pop_front();
-            gHistory.rssi.pop_front();
-            gHistory.asu.pop_front();
-            gHistory.time_axis.pop_front();
+    gTimeCounter += 3.0f;
+    for (auto& c : data->lte) {
+        auto& h = gPciHistory[c.pci];
+        if (h.rsrp.size() >= MAX_POINTS) {
+            h.rsrp.pop_front();
+            h.rssi.pop_front();
+            h.rsrq.pop_front();
+            h.time_axis.pop_front();
         }
-        gHistory.rsrp.push_back((float)c.rsrp);
-        gHistory.rsrq.push_back((float)c.rsrq);
-        gHistory.rssi.push_back((float)c.rssi);
-        gHistory.asu.push_back((float)c.asu);
-        gHistory.time_axis.push_back(gHistory.time_counter);
+        h.rsrp.push_back((float)c.rsrp);
+        h.rssi.push_back((float)c.rssi);
+        h.rsrq.push_back((float)c.rsrq);
+        h.time_axis.push_back(gTimeCounter);
     }
 
     data->gsm.clear();
@@ -148,26 +190,37 @@ void process_json(const nlohmann::json& j, DeviceData* data) {
 }
 
 void load_json_file(DeviceData* data) {
+    PGconn* conn = db_connect();
+
     std::ifstream infile("locations.json");
     if (!infile.good()) {
         std::cout << "No locations.json found" << std::endl;
+        if (conn) PQfinish(conn);
         return;
     }
     nlohmann::json arr;
     try {
         infile >> arr;
-        if (!arr.is_array()) return;
+        if (!arr.is_array()) {
+            if (conn) PQfinish(conn);
+            return;
+        }
         std::cout << "Loading " << arr.size() << " records from locations.json..." << std::endl;
         for (auto& j : arr) {
-            process_json(j, data);
+            process_json(j, data, conn);
         }
         std::cout << "Done loading." << std::endl;
     } catch (const std::exception& e) {
         std::cout << "Error loading JSON: " << e.what() << std::endl;
     }
+
+    if (conn) PQfinish(conn);
 }
 
 void run_server(DeviceData* data) {
+    PGconn* conn = db_connect();
+    if (conn) std::cout << "Connected to PostgreSQL" << std::endl;
+
     zmq::context_t context(1);
     zmq::socket_t socket(context, zmq::socket_type::rep);
     socket.bind("tcp://0.0.0.0:5555");
@@ -190,7 +243,7 @@ void run_server(DeviceData* data) {
             outfile << arr.dump(4);
 
             std::lock_guard<std::mutex> lock(data_mutex);
-            process_json(j, data);
+            process_json(j, data, conn);
 
         } catch (const std::exception& e) {
             std::cout << "Invalid JSON: " << e.what() << std::endl;
@@ -198,6 +251,8 @@ void run_server(DeviceData* data) {
 
         socket.send(zmq::buffer(std::string("OK")), zmq::send_flags::none);
     }
+
+    if (conn) PQfinish(conn);
 }
 
 void run_gui(DeviceData* data) {
@@ -284,26 +339,38 @@ void run_gui(DeviceData* data) {
         }
         ImGui::End();
 
-        ImGui::Begin("Signal Strength (LTE Cell 0)");
+        ImGui::Begin("Signal Strength by PCI");
         {
             std::lock_guard<std::mutex> lock(data_mutex);
-            std::vector<float> t(gHistory.time_axis.begin(), gHistory.time_axis.end());
-            std::vector<float> rsrp(gHistory.rsrp.begin(), gHistory.rsrp.end());
-            std::vector<float> rsrq(gHistory.rsrq.begin(), gHistory.rsrq.end());
-            std::vector<float> rssi(gHistory.rssi.begin(), gHistory.rssi.end());
-            std::vector<float> asu(gHistory.asu.begin(), gHistory.asu.end());
-
-            if (!t.empty()) {
-                if (ImPlot::BeginPlot("RSRP / RSRQ / RSSI", ImVec2(-1, 250))) {
+            if (!gPciHistory.empty()) {
+                if (ImPlot::BeginPlot("RSRP by PCI", ImVec2(-1, 250))) {
                     ImPlot::SetupAxes("Time (s)", "dBm");
-                    ImPlot::PlotLine("RSRP", t.data(), rsrp.data(), (int)t.size());
-                    ImPlot::PlotLine("RSRQ", t.data(), rsrq.data(), (int)t.size());
-                    ImPlot::PlotLine("RSSI", t.data(), rssi.data(), (int)t.size());
+                    for (auto& [pci, h] : gPciHistory) {
+                        std::vector<float> t(h.time_axis.begin(), h.time_axis.end());
+                        std::vector<float> rsrp(h.rsrp.begin(), h.rsrp.end());
+                        std::string label = "PCI " + std::to_string(pci);
+                        ImPlot::PlotLine(label.c_str(), t.data(), rsrp.data(), (int)t.size());
+                    }
                     ImPlot::EndPlot();
                 }
-                if (ImPlot::BeginPlot("ASU Level", ImVec2(-1, 200))) {
-                    ImPlot::SetupAxes("Time (s)", "ASU");
-                    ImPlot::PlotLine("ASU", t.data(), asu.data(), (int)t.size());
+                if (ImPlot::BeginPlot("RSSI by PCI", ImVec2(-1, 200))) {
+                    ImPlot::SetupAxes("Time (s)", "dBm");
+                    for (auto& [pci, h] : gPciHistory) {
+                        std::vector<float> t(h.time_axis.begin(), h.time_axis.end());
+                        std::vector<float> rssi(h.rssi.begin(), h.rssi.end());
+                        std::string label = "PCI " + std::to_string(pci);
+                        ImPlot::PlotLine(label.c_str(), t.data(), rssi.data(), (int)t.size());
+                    }
+                    ImPlot::EndPlot();
+                }
+                if (ImPlot::BeginPlot("RSRQ by PCI", ImVec2(-1, 200))) {
+                    ImPlot::SetupAxes("Time (s)", "dBm");
+                    for (auto& [pci, h] : gPciHistory) {
+                        std::vector<float> t(h.time_axis.begin(), h.time_axis.end());
+                        std::vector<float> rsrq(h.rsrq.begin(), h.rsrq.end());
+                        std::string label = "PCI " + std::to_string(pci);
+                        ImPlot::PlotLine(label.c_str(), t.data(), rsrq.data(), (int)t.size());
+                    }
                     ImPlot::EndPlot();
                 }
             } else {
