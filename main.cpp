@@ -7,6 +7,7 @@
 #include <deque>
 #include <map>
 #include <chrono>
+#include <cmath> // Добавлено для NAN
 #include <zmq.hpp>
 #include <nlohmann/json.hpp>
 #include "imgui.h"
@@ -60,7 +61,7 @@ std::mutex data_mutex;
 std::atomic<bool> server_running{true};
 std::map<int, PciHistory> gPciHistory;
 float gTimeCounter = 0.0f;
-const int MAX_POINTS = 200;
+const int MAX_POINTS = 100000;
 
 PGconn* db_connect() {
     PGconn* conn = PQconnectdb("host=localhost dbname=cellinfo user=postgres password=postgres");
@@ -72,35 +73,55 @@ PGconn* db_connect() {
     return conn;
 }
 
-void db_insert(PGconn* conn, const Location& loc, const LteCell& cell) {
-    if (!conn) return;
-    std::string query =
-        "INSERT INTO lte_cells (timestamp, latitude, longitude, altitude, accuracy, band, cid, earfcn, mcc, mnc, pci, tac, asu, cqi, rsrp, rsrq, rssi, rssnr, timing_advance) VALUES ('" +
-        loc.timestamp + "'," +
-        std::to_string(loc.latitude) + "," +
-        std::to_string(loc.longitude) + "," +
-        std::to_string(loc.altitude) + "," +
-        std::to_string(loc.accuracy) + ",'" +
-        cell.band + "'," +
-        std::to_string(cell.cid) + "," +
-        std::to_string(cell.earfcn) + ",'" +
-        cell.mcc + "','" +
-        cell.mnc + "'," +
-        std::to_string(cell.pci) + "," +
-        std::to_string(cell.tac) + "," +
-        std::to_string(cell.asu) + "," +
-        std::to_string(cell.cqi) + "," +
-        std::to_string(cell.rsrp) + "," +
-        std::to_string(cell.rsrq) + "," +
-        std::to_string(cell.rssi) + "," +
-        std::to_string(cell.rssnr) + "," +
-        std::to_string(cell.timing_advance) + ")";
+// Вспомогательная функция: 2147483647 -> NULL
+std::string sql_val(int v) {
+    return (v == 2147483647) ? "NULL" : std::to_string(v);
+}
 
-    PGresult* res = PQexec(conn, query.c_str());
-    if (PQresultStatus(res) != PGRES_COMMAND_OK) {
-        std::cout << "Insert failed: " << PQerrorMessage(conn) << std::endl;
+// ФИКС: Вставка в две связанные таблицы
+void db_insert(PGconn* conn, const Location& loc, const std::vector<LteCell>& cells) {
+    if (!conn || cells.empty()) return;
+
+    // 1. Вставляем в measurements и забираем ID
+    std::string m_query = "INSERT INTO measurements (timestamp, latitude, longitude, altitude, accuracy) VALUES ('" +
+        loc.timestamp + "', " +
+        std::to_string(loc.latitude) + ", " +
+        std::to_string(loc.longitude) + ", " +
+        std::to_string(loc.altitude) + ", " +
+        std::to_string(loc.accuracy) + ") RETURNING id;";
+
+    PGresult* res = PQexec(conn, m_query.c_str());
+    if (PQresultStatus(res) != PGRES_TUPLES_OK) {
+        std::cout << "Measurement insert failed: " << PQerrorMessage(conn) << std::endl;
+        PQclear(res);
+        return;
     }
+
+    int meas_id = std::stoi(PQgetvalue(res, 0, 0));
     PQclear(res);
+
+    // 2. Пишем все соты с привязкой к meas_id
+    for (const auto& cell : cells) {
+        std::string c_query = "INSERT INTO lte_cells (meas_id, pci, earfcn, band, rsrp, rsrq, rssi, asu, cid, tac, mcc, mnc) VALUES (" +
+            std::to_string(meas_id) + ", " +
+            std::to_string(cell.pci) + ", " +
+            std::to_string(cell.earfcn) + ", " +
+            cell.band + ", " +
+            sql_val(cell.rsrp) + ", " +
+            sql_val(cell.rsrq) + ", " +
+            sql_val(cell.rssi) + ", " +
+            sql_val(cell.asu) + ", " +
+            std::to_string(cell.cid) + ", " +
+            std::to_string(cell.tac) + ", " +
+            (cell.mcc.empty() ? "NULL" : "'" + cell.mcc + "'") + ", " +
+            (cell.mnc.empty() ? "NULL" : "'" + cell.mnc + "'") + ");";
+
+        PGresult* c_res = PQexec(conn, c_query.c_str());
+        if (PQresultStatus(c_res) != PGRES_COMMAND_OK) {
+            std::cout << "Cell insert failed: " << PQerrorMessage(conn) << std::endl;
+        }
+        PQclear(c_res);
+    }
 }
 
 void process_json(const nlohmann::json& j, DeviceData* data, PGconn* conn) {
@@ -132,12 +153,12 @@ void process_json(const nlohmann::json& j, DeviceData* data, PGconn* conn) {
             c.rssnr  = cell.value("rssnr", 0);
             c.timing_advance = cell.value("timing_advance", 0);
             data->lte.push_back(c);
-
-            if (conn) db_insert(conn, data->location, c);
         }
+        // ФИКС: Вызываем вставку ОДИН раз для всего вектора
+        if (conn) db_insert(conn, data->location, data->lte);
     }
 
-    gTimeCounter += 3.0f;
+    gTimeCounter += 1.0f;
     for (auto& c : data->lte) {
         auto& h = gPciHistory[c.pci];
         if (h.rsrp.size() >= MAX_POINTS) {
@@ -146,9 +167,15 @@ void process_json(const nlohmann::json& j, DeviceData* data, PGconn* conn) {
             h.rsrq.pop_front();
             h.time_axis.pop_front();
         }
-        h.rsrp.push_back((float)c.rsrp);
-        h.rssi.push_back((float)c.rssi);
-        h.rsrq.push_back((float)c.rsrq);
+        
+        // ФИКС: Защита графиков ImPlot от 2147483647
+        float rsrp_val = (c.rsrp == 2147483647) ? NAN : (float)c.rsrp;
+        float rssi_val = (c.rssi == 2147483647) ? NAN : (float)c.rssi;
+        float rsrq_val = (c.rsrq == 2147483647) ? NAN : (float)c.rsrq;
+
+        h.rsrp.push_back(rsrp_val);
+        h.rssi.push_back(rssi_val);
+        h.rsrq.push_back(rsrq_val);
         h.time_axis.push_back(gTimeCounter);
     }
 
@@ -191,30 +218,55 @@ void process_json(const nlohmann::json& j, DeviceData* data, PGconn* conn) {
 
 void load_json_file(DeviceData* data) {
     PGconn* conn = db_connect();
-
     std::ifstream infile("locations.json");
+
     if (!infile.good()) {
-        std::cout << "No locations.json found" << std::endl;
+        std::cout << "Error: locations.json not found!" << std::endl;
         if (conn) PQfinish(conn);
         return;
     }
-    nlohmann::json arr;
+
+    if (conn) PQexec(conn, "BEGIN;"); // Открываем транзакцию для скорости
+
+    int count = 0;
     try {
-        infile >> arr;
-        if (!arr.is_array()) {
-            if (conn) PQfinish(conn);
-            return;
+        while (infile.peek() != EOF) {
+            // Пропускаем мусорные символы между объектами (запятые, пробелы, переносы)
+            while (isspace(infile.peek()) || infile.peek() == ',') {
+                infile.ignore();
+            }
+
+            if (infile.peek() == EOF) break;
+
+            nlohmann::json j;
+            infile >> j; 
+
+            if (j.is_array()) {
+                // Если считали кусок-массив (первая половина файла)
+                for (auto& element : j) {
+                    process_json(element, data, conn);
+                    count++;
+                }
+            } else if (j.is_object()) {
+                // Если считали одиночный объект (вторая половина файла)
+                process_json(j, data, conn);
+                count++;
+            }
+
+            if (count % 1000 == 0 && count > 0) {
+                std::cout << "Processed " << count << " records..." << std::endl;
+            }
         }
-        std::cout << "Loading " << arr.size() << " records from locations.json..." << std::endl;
-        for (auto& j : arr) {
-            process_json(j, data, conn);
-        }
-        std::cout << "Done loading." << std::endl;
     } catch (const std::exception& e) {
-        std::cout << "Error loading JSON: " << e.what() << std::endl;
+        std::cerr << "Parsing finished or interrupted: " << e.what() << std::endl;
     }
 
-    if (conn) PQfinish(conn);
+    if (conn) {
+        PQexec(conn, "COMMIT;"); // Фиксируем все вставки разом
+        PQfinish(conn);
+    }
+
+    std::cout << "Done! Total records processed: " << count << std::endl;
 }
 
 void run_server(DeviceData* data) {
