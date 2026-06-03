@@ -2,10 +2,12 @@
 
 Backend-сервер для сбора и отображения данных о сотовых сетях с Android-устройства.
 
+Проект теперь также поддерживает просмотр OpenStreetMap-тайлов в отдельном окне ImGui/ImPlot.
+
 ## Зависимости
 
 ```bash
-sudo apt install -y libzmq3-dev libsdl2-dev libglew-dev nlohmann-json3-dev libpq-dev postgresql
+sudo apt install -y libzmq3-dev libsdl2-dev libglew-dev nlohmann-json3-dev libpq-dev postgresql libcurl4-openssl-dev
 ```
 
 ImGui и ImPlot клонируются вручную:
@@ -24,14 +26,6 @@ cmake ..
 make
 ```
 
-## База данных
-
-```bash
-sudo service postgresql start
-sudo -u postgres psql -c "CREATE DATABASE cellinfo;"
-sudo -u postgres psql -d cellinfo -c "CREATE TABLE lte_cells (id SERIAL PRIMARY KEY, timestamp TEXT, latitude DOUBLE PRECISION, longitude DOUBLE PRECISION, altitude DOUBLE PRECISION, accuracy DOUBLE PRECISION, band TEXT, cid INTEGER, earfcn INTEGER, mcc TEXT, mnc TEXT, pci INTEGER, tac INTEGER, asu INTEGER, cqi INTEGER, rsrp INTEGER, rsrq INTEGER, rssi INTEGER, rssnr INTEGER, timing_advance INTEGER);"
-```
-
 ## Запуск
 
 ```bash
@@ -39,17 +33,28 @@ cd build
 ./main
 ```
 
+## Кэш OSM-таилов
+
+- Тайлы сохраняются в папке `build/<zoom>/<x>/<y>.png`
+- Если тайл уже найден на диске, он берётся из кэша и не скачивается повторно
+- Если тайл отсутствует, он загружается с OSM-сервера `https://a.tile.openstreetmap.org/<z>/<x>/<y>.png`
+- Загрузка выполняется асинхронно в фоне, а отрисовка обновляется, когда тайл доступен
+
 ## Архитектура
 
-- **run\_server** — ZMQ REP-сокет, принимает JSON от Android, пишет в PostgreSQL и `locations.json`
-- **run\_gui** — ImGui + ImPlot, отображает текущие данные и графики сигнала по PCI
-- Общая структура `DeviceData` защищена `std::mutex`
-- При старте автоматически загружает `locations.json` если файл существует
+- **server.cpp** — приём данных от Android по ZMQ и обновление общей структуры `DannyeUstrojstva`
+- **grafika.cpp** — создание окна SDL/OpenGL, инициализация ImGui/ImPlot и запуск визуализации
+- **karta.cpp** — расчёт номера тайла, управление кэшем, загрузка PNG и отображение OSM-карты
+- **curl_zapros.cpp** — загрузка тайлов с OpenStreetMap через libcurl
+- **tajly.cpp** — работа с дисковым кэшем PNG и преобразование `.png` в RGBA-пиксели через stb_image
+- **globalnye.cpp / globalnye.h** — общие мьютексы, атомарные флаги и разделяемые данные
 
 ## Возможности
 
 - Приём данных LTE/GSM/NR с Android в реальном времени
 - Отображение координат, высоты, точности GPS
-- Графики RSRP, RSSI, RSRQ для каждого PCI отдельным цветом
-- Сохранение всех данных в PostgreSQL и JSON
-- Загрузка накопленного JSON для анализа без телефона
+- Графики RSRP, RSSI, RSRQ для каждого PCI отдельно
+- Просмотр OpenStreetMap в окне ImGui с динамической подсветкой текущего центра карты
+- Автоматическая подгрузка нескольких тайлов в зависимости от размера окна
+- Кэширование тайлов на диске и повторное использование без повторного скачивания
+- Асинхронная загрузка PNG-изображений в фоне
