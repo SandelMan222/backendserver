@@ -299,24 +299,6 @@ cell_info_monitor_IS_TOP_LEVEL:STATIC=ON
 //Value Computed by CMake
 cell_info_monitor_SOURCE_DIR:STATIC=/mnt/c/Users/User/backendserver
 
-//Value Computed by CMake
-imgui_test_BINARY_DIR:STATIC=/mnt/c/Users/User/backendserver/build
-
-//Value Computed by CMake
-imgui_test_IS_TOP_LEVEL:STATIC=ON
-
-//Value Computed by CMake
-imgui_test_SOURCE_DIR:STATIC=/mnt/c/Users/User/backendserver
-
-//Value Computed by CMake
-osm_viewer_BINARY_DIR:STATIC=/mnt/c/Users/User/backendserver/build
-
-//Value Computed by CMake
-osm_viewer_IS_TOP_LEVEL:STATIC=ON
-
-//Value Computed by CMake
-osm_viewer_SOURCE_DIR:STATIC=/mnt/c/Users/User/backendserver
-
 //Path to a library.
 pkgcfg_lib_PC_CURL_curl:FILEPATH=/usr/lib/x86_64-linux-gnu/libcurl.so
 

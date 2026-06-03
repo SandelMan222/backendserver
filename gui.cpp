@@ -1,4 +1,5 @@
 #include "gui.h"
+#include "heatmap_engine.h"
 #include <SDL2/SDL.h>
 #include "imgui.h"
 #include "backends/imgui_impl_sdl2.h"
@@ -129,6 +130,54 @@ void zapustit_gui(DeviceData* data) {
                 }
             } else {
                 ImGui::Text("Waiting for data...");
+            }
+        }
+        ImGui::End();
+
+        ImGui::Begin("Heatmap Generator");
+        {
+            static int tekushchiyKriteriy = 0;
+            static int tekushchiyEarfcn = 100;
+            static int radiusMetry = 25;
+            static int shirinaKarty = 512;
+            static int vysotaKarty = 512;
+            static bool dlyaKazhdogoTaylya = false;
+
+            ImGui::Combo("Kriteriy", &tekushchiyKriteriy, "RSRP\0RSRQ\0RSSI\0Vysota\0");
+            ImGui::InputInt("EARFCN", &tekushchiyEarfcn);
+            ImGui::SliderInt("Radius (m)", &radiusMetry, 10, 100);
+            ImGui::SliderInt("Width", &shirinaKarty, 256, 1024);
+            ImGui::SliderInt("Height", &vysotaKarty, 256, 1024);
+            ImGui::Checkbox("Generate per Tile", &dlyaKazhdogoTaylya);
+
+            ImGui::Separator();
+
+            if (ImGui::Button("Start Generation", ImVec2(200, 0))) {
+                ParametryGeneracii par;
+                par.kriteriy = static_cast<KriteriyTeplovoyKarty>(tekushchiyKriteriy);
+                par.earfcn = tekushchiyEarfcn;
+                par.radiusMetry = radiusMetry;
+                par.shirinaKarty = shirinaKarty;
+                par.vysotaKarty = vysotaKarty;
+                par.dlyaKazhdogoTaylya = dlyaKazhdogoTaylya;
+                par.putySohraneniya = "./build";
+                zapustit_generaciyu_v_potoke(par);
+            }
+
+            ImGui::SameLine();
+
+            if (ImGui::Button("Stop Generation", ImVec2(200, 0))) {
+                ostanavliv_generaciyu();
+            }
+
+            ImGui::Separator();
+
+            {
+                std::lock_guard<std::mutex> lock(statusGeneracii.mtx);
+                if (statusGeneracii.vypolnyaetsya) {
+                    ImGui::ProgressBar(statusGeneracii.progress, ImVec2(-1, 0));
+                }
+                ImGui::TextWrapped("Status: %s", statusGeneracii.soobshchenie.c_str());
             }
         }
         ImGui::End();

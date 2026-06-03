@@ -12,6 +12,7 @@
 #include <stb_image.h>
 
 #include "imgui.h"
+#include <nlohmann/json.hpp>
 
 int POW2[19];
 double mapCenterLat = 54.9884;
@@ -21,6 +22,12 @@ int mapZoom = 12;
 std::map<TileKey, Tile> tileCache;
 std::atomic<int> tilesLoaded{0};
 std::atomic<int> tilesFailed{0};
+
+struct HeatmapOverlay {
+    GLuint texId = 0;
+    double minLat = 0, maxLat = 0, minLon = 0, maxLon = 0;
+    std::string path;
+} heatmapOverlay;
 
 static const int TILE_PX = 256;
 static const double MAP_PI  = std::numbers::pi_v<double>;
@@ -202,6 +209,63 @@ void otrisovat_okno_karty() {
                     ImPlotPoint(tx+1.0, ty+1.0),
                     ImVec2(0,1), ImVec2(1,0));
             }
+
+        // Try load heatmap metadata + PNG if present
+        std::string base = "./build/";
+        // check common pattern heatmap_<kriteriy>_<earfcn>.json
+        // We'll pick the latest existing heatmap file (simple heuristic: only one present)
+        for (const auto &entry : std::filesystem::directory_iterator(base)) {
+            if (!entry.is_regular_file()) continue;
+            std::string name = entry.path().filename().string();
+            if (name.rfind("heatmap_", 0) == 0 && entry.path().extension() == ".json") {
+                std::string metaPath = entry.path().string();
+                std::string pngPath = metaPath.substr(0, metaPath.size() - 5) + ".png";
+                if (!std::filesystem::exists(pngPath)) continue;
+                if (heatmapOverlay.path == pngPath) break; // already loaded
+
+                // parse metadata
+                try {
+                    std::ifstream mf(metaPath);
+                    if (!mf.good()) continue;
+                    nlohmann::json meta; mf >> meta;
+                    double minLat = meta.value("minLat", 0.0);
+                    double maxLat = meta.value("maxLat", 0.0);
+                    double minLon = meta.value("minLon", 0.0);
+                    double maxLon = meta.value("maxLon", 0.0);
+
+                    // load png bytes
+                    std::ifstream pf(pngPath, std::ios::binary);
+                    std::vector<unsigned char> blob((std::istreambuf_iterator<char>(pf)), std::istreambuf_iterator<char>());
+                    if (blob.empty()) continue;
+
+                    // create GL texture
+                    if (heatmapOverlay.texId) { glDeleteTextures(1, &heatmapOverlay.texId); heatmapOverlay.texId = 0; }
+                    heatmapOverlay.texId = zagruzit_teksturu(blob);
+                    if (heatmapOverlay.texId) {
+                        heatmapOverlay.minLat = minLat; heatmapOverlay.maxLat = maxLat;
+                        heatmapOverlay.minLon = minLon; heatmapOverlay.maxLon = maxLon;
+                        heatmapOverlay.path = pngPath;
+                        // center map on heatmap bounds so overlay is visible
+                        mapCenterLat = (minLat + maxLat) / 2.0;
+                        mapCenterLon = (minLon + maxLon) / 2.0;
+                    }
+                } catch (...) { }
+                break; // only handle first meta found
+            }
+        }
+
+        // Draw heatmap overlay if loaded
+        if (heatmapOverlay.texId) {
+            double xmin = dolgota_v_x(heatmapOverlay.minLon, mapZoom);
+            double xmax = dolgota_v_x(heatmapOverlay.maxLon, mapZoom);
+            double ymin = shirota_v_y(heatmapOverlay.maxLat, mapZoom);
+            double ymax = shirota_v_y(heatmapOverlay.minLat, mapZoom);
+            ImPlot::PlotImage("##heatmap",
+                (ImTextureID)(intptr_t)heatmapOverlay.texId,
+                ImPlotPoint(xmin, ymin),
+                ImPlotPoint(xmax, ymax),
+                ImVec2(0,1), ImVec2(1,0));
+        }
 
         if (ImPlot::IsPlotHovered() && ImGui::IsMouseDragging(ImGuiMouseButton_Left)) {
             ImVec2 delta = ImGui::GetMouseDragDelta(ImGuiMouseButton_Left, 0.0f);

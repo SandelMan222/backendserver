@@ -203,6 +203,30 @@ gui.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/cell_monitor.dir/build.make CMakeFiles/cell_monitor.dir/gui.cpp.s
 .PHONY : gui.cpp.s
 
+heatmap_engine.o: heatmap_engine.cpp.o
+.PHONY : heatmap_engine.o
+
+# target to build an object file
+heatmap_engine.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cell_monitor.dir/build.make CMakeFiles/cell_monitor.dir/heatmap_engine.cpp.o
+.PHONY : heatmap_engine.cpp.o
+
+heatmap_engine.i: heatmap_engine.cpp.i
+.PHONY : heatmap_engine.i
+
+# target to preprocess a source file
+heatmap_engine.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cell_monitor.dir/build.make CMakeFiles/cell_monitor.dir/heatmap_engine.cpp.i
+.PHONY : heatmap_engine.cpp.i
+
+heatmap_engine.s: heatmap_engine.cpp.s
+.PHONY : heatmap_engine.s
+
+# target to generate assembly for a file
+heatmap_engine.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/cell_monitor.dir/build.make CMakeFiles/cell_monitor.dir/heatmap_engine.cpp.s
+.PHONY : heatmap_engine.cpp.s
+
 json_loader.o: json_loader.cpp.o
 .PHONY : json_loader.o
 
@@ -556,6 +580,9 @@ help:
 	@echo "... gui.o"
 	@echo "... gui.i"
 	@echo "... gui.s"
+	@echo "... heatmap_engine.o"
+	@echo "... heatmap_engine.i"
+	@echo "... heatmap_engine.s"
 	@echo "... json_loader.o"
 	@echo "... json_loader.i"
 	@echo "... json_loader.s"

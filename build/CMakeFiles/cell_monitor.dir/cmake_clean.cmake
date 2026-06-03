@@ -3,6 +3,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/cell_monitor.dir/db.cpp.o.d"
   "CMakeFiles/cell_monitor.dir/gui.cpp.o"
   "CMakeFiles/cell_monitor.dir/gui.cpp.o.d"
+  "CMakeFiles/cell_monitor.dir/heatmap_engine.cpp.o"
+  "CMakeFiles/cell_monitor.dir/heatmap_engine.cpp.o.d"
   "CMakeFiles/cell_monitor.dir/json_loader.cpp.o"
   "CMakeFiles/cell_monitor.dir/json_loader.cpp.o.d"
   "CMakeFiles/cell_monitor.dir/main.cpp.o"

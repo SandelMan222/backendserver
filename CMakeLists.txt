@@ -54,6 +54,7 @@ add_executable(cell_monitor
     zmq_server.cpp
     osm_map.cpp
     gui.cpp
+    heatmap_engine.cpp
 )
 
 # Линковка всех зависимостей
