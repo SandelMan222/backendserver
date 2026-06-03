@@ -1,60 +1,122 @@
+**Вот улучшенная и красиво оформленная версия файла `README.md`:**
+
+```markdown
 # Cell Info Monitor
 
-Backend-сервер для сбора и отображения данных о сотовых сетях с Android-устройства.
+**Backend-сервер** для сбора, логирования и визуализации данных о сотовых сетях (LTE, GSM, NR) с Android-устройств с интерактивной картой OpenStreetMap.
 
-Проект теперь также поддерживает просмотр OpenStreetMap-тайлов в отдельном окне ImGui/ImPlot.
+---
 
-## Зависимости
+## Возможности
+
+- Приём данных LTE/GSM/NR в реальном времени по протоколу **ZeroMQ**
+- Отображение координат, высоты и точности GPS
+- Интерактивные графики **RSRP, RSSI, RSRQ** для каждого PCI через **ImPlot**
+- Интерактивная карта **OpenStreetMap** в отдельном окне ImGui
+- Динамическая подгрузка тайлов в зависимости от масштаба и размера окна
+- Кэширование тайлов на диске (работает без интернета)
+- Сохранение всей истории измерений в **PostgreSQL**
+
+---
+
+## Архитектура
+
+Проект разделён на независимые модули:
+
+| Модуль                  | Описание |
+|------------------------|----------|
+| `types.h`              | Общие структуры данных (`LteCell`, `GsmCell`, `NrCell`, `Location` и др.) |
+| `db.h / db.cpp`        | Работа с PostgreSQL (подключение и вставка данных) |
+| `json_loader.h / cpp`  | Парсинг JSON и работа с историей |
+| `zmq_server.h / cpp`   | ZeroMQ-сервер (порт 5555) |
+| `osm_map.h / cpp`      | Движок карты: загрузка, кэширование и отрисовка тайлов |
+| `gui.h / cpp`          | Графический интерфейс (SDL2 + ImGui + ImPlot) |
+| `main.cpp`             | Запуск сервера и GUI в отдельных потоках |
+
+---
+
+## Установка зависимостей
 
 ```bash
-sudo apt install -y libzmq3-dev libsdl2-dev libglew-dev nlohmann-json3-dev libpq-dev postgresql libcurl4-openssl-dev
+sudo apt update
+sudo apt install -y \
+    libzmq3-dev \
+    libsdl2-dev \
+    libglew-dev \
+    nlohmann-json3-dev \
+    libpq-dev \
+    postgresql \
+    libcurl4-openssl-dev \
+    build-essential \
+    cmake
 ```
 
-ImGui и ImPlot клонируются вручную:
+### Клонирование библиотек интерфейса
 
 ```bash
-mkdir third_party && cd third_party
+mkdir -p third_party && cd third_party
+
 git clone https://github.com/ocornut/imgui.git
 git clone https://github.com/epezent/implot.git
+
+# stb_image (если нет)
+mkdir -p stb && cd stb
+wget https://raw.githubusercontent.com/nothings/stb/master/stb_image.h
 ```
 
-## Компиляция
+---
+
+## Сборка проекта
 
 ```bash
 mkdir build && cd build
 cmake ..
-make
+make -j$(nproc)
 ```
+
+---
 
 ## Запуск
 
+### 1. Настройка базы данных
+
 ```bash
-cd build
-./main
+# Создание базы данных (один раз)
+sudo -u postgres createdb cellinfo
+sudo -u postgres psql -c "ALTER USER postgres WITH PASSWORD 'postgres';"
 ```
 
-## Кэш OSM-таилов
+### 2. Запуск приложения
 
-- Тайлы сохраняются в папке `build/<zoom>/<x>/<y>.png`
-- Если тайл уже найден на диске, он берётся из кэша и не скачивается повторно
-- Если тайл отсутствует, он загружается с OSM-сервера `https://a.tile.openstreetmap.org/<z>/<x>/<y>.png`
-- Загрузка выполняется асинхронно в фоне, а отрисовка обновляется, когда тайл доступен
+```bash
+cd build
+./cell_monitor
+```
 
-## Архитектура
+---
 
-- **server.cpp** — приём данных от Android по ZMQ и обновление общей структуры `DannyeUstrojstva`
-- **grafika.cpp** — создание окна SDL/OpenGL, инициализация ImGui/ImPlot и запуск визуализации
-- **karta.cpp** — расчёт номера тайла, управление кэшем, загрузка PNG и отображение OSM-карты
-- **curl_zapros.cpp** — загрузка тайлов с OpenStreetMap через libcurl
-- **tajly.cpp** — работа с дисковым кэшем PNG и преобразование `.png` в RGBA-пиксели через stb_image
-- **globalnye.cpp / globalnye.h** — общие мьютексы, атомарные флаги и разделяемые данные
+## Кэш OSM-тайлов
 
-## Возможности
+Тайлы автоматически сохраняются по пути:
 
-- Приём данных LTE/GSM/NR с Android в реальном времени
-- Отображение координат, высоты, точности GPS
-- Графики RSRP, RSSI, RSRQ для каждого PCI отдельно
-- Просмотр OpenStreetMap в окне ImGui с динамической подсветкой текущего центра карты
-- Автоматическая подгрузка нескольких тайлов в зависимости от размера окна
-- Кэширование тайлов на диске и повторное использование без повторного скачивания
-- Асинхронная загрузка PNG-изображений в фоне
+```
+tiles/<zoom>/<x>/<y>.png
+```
+
+- При наличии файла — используется кэш (работает оффлайн).
+- При отсутствии — загружается с зеркала `tile.openstreetmap.fr/osmfr`.
+- Загрузка происходит асинхронно и не тормозит интерфейс.
+
+---
+
+## Технологии
+
+- **C++17**
+- **ZeroMQ** — передача данных
+- **ImGui + ImPlot** — интерфейс и графики
+- **SDL2 + OpenGL** — рендеринг
+- **PostgreSQL** — хранение истории
+- **libcurl** — загрузка тайлов
+- **OpenStreetMap** — картографическая подложка
+
+---
