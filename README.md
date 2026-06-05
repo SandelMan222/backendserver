@@ -1,4 +1,3 @@
-**Вот улучшенная и красиво оформленная версия файла `README.md`:**
 
 ```markdown
 # Cell Info Monitor
