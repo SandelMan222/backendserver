@@ -210,10 +210,9 @@ void otrisovat_okno_karty() {
                     ImVec2(0,1), ImVec2(1,0));
             }
 
-        // Try load heatmap metadata + PNG if present
+       
         std::string base = "./build/";
-        // check common pattern heatmap_<kriteriy>_<earfcn>.json
-        // We'll pick the latest existing heatmap file (simple heuristic: only one present)
+
         for (const auto &entry : std::filesystem::directory_iterator(base)) {
             if (!entry.is_regular_file()) continue;
             std::string name = entry.path().filename().string();
@@ -221,9 +220,8 @@ void otrisovat_okno_karty() {
                 std::string metaPath = entry.path().string();
                 std::string pngPath = metaPath.substr(0, metaPath.size() - 5) + ".png";
                 if (!std::filesystem::exists(pngPath)) continue;
-                if (heatmapOverlay.path == pngPath) break; // already loaded
+                if (heatmapOverlay.path == pngPath) break; 
 
-                // parse metadata
                 try {
                     std::ifstream mf(metaPath);
                     if (!mf.good()) continue;
@@ -233,28 +231,28 @@ void otrisovat_okno_karty() {
                     double minLon = meta.value("minLon", 0.0);
                     double maxLon = meta.value("maxLon", 0.0);
 
-                    // load png bytes
+                
                     std::ifstream pf(pngPath, std::ios::binary);
                     std::vector<unsigned char> blob((std::istreambuf_iterator<char>(pf)), std::istreambuf_iterator<char>());
                     if (blob.empty()) continue;
 
-                    // create GL texture
+                   
                     if (heatmapOverlay.texId) { glDeleteTextures(1, &heatmapOverlay.texId); heatmapOverlay.texId = 0; }
                     heatmapOverlay.texId = zagruzit_teksturu(blob);
                     if (heatmapOverlay.texId) {
                         heatmapOverlay.minLat = minLat; heatmapOverlay.maxLat = maxLat;
                         heatmapOverlay.minLon = minLon; heatmapOverlay.maxLon = maxLon;
                         heatmapOverlay.path = pngPath;
-                        // center map on heatmap bounds so overlay is visible
+                        
                         mapCenterLat = (minLat + maxLat) / 2.0;
                         mapCenterLon = (minLon + maxLon) / 2.0;
                     }
                 } catch (...) { }
-                break; // only handle first meta found
+                break; 
             }
         }
 
-        // Draw heatmap overlay if loaded
+  
         if (heatmapOverlay.texId) {
             double xmin = dolgota_v_x(heatmapOverlay.minLon, mapZoom);
             double xmax = dolgota_v_x(heatmapOverlay.maxLon, mapZoom);
